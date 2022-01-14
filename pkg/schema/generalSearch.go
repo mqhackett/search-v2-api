@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"time"
 
 	klog "k8s.io/klog/v2"
 
@@ -14,27 +15,37 @@ import (
 
 var trimAND string = " AND "
 
-func Search(ctx context.Context, input []*model.SearchInput) ([]*model.SearchResult, error) {
+const COUNT = "count"
+const RELATED = "related"
+const ITEMS = "items"
+
+func Search(ctx context.Context, input []*model.SearchInput, selMap map[string]bool) ([]*model.SearchResult, error) {
 	limit := 0
 	srchResult := make([]*model.SearchResult, 0)
 
 	if len(input) > 0 {
 		for _, in := range input {
-			query, args := searchQuery(ctx, in, &limit)
+			query, args := searchQuery(ctx, in, &limit, selMap)
 			klog.Infof("Search Query:", query)
 			//TODO: Check error
-			srchRes, _ := searchResults(query, args)
+			srchRes, _ := searchResults(query, args, selMap)
 			srchResult = append(srchResult, srchRes)
 		}
 	}
 	return srchResult, nil
 }
 
-func searchQuery(ctx context.Context, input *model.SearchInput, limit *int) (string, []interface{}) {
+func searchQuery(ctx context.Context, input *model.SearchInput, limit *int, selMap map[string]bool) (string, []interface{}) {
 	var selectClause, whereClause, limitClause, limitStr, query string
 	var args []interface{}
 	// SELECT uid, cluster, data FROM resources  WHERE lower(data->> 'kind') IN (lower('Pod')) AND lower(data->> 'cluster') IN (lower('local-cluster')) LIMIT 10000
-	selectClause = "SELECT uid, cluster, data FROM resources "
+	if len(selMap) == 1 && selMap[COUNT] {
+		selectClause = "SELECT COUNT(*) FROM resources "
+	} else if selMap[ITEMS] || selMap[RELATED] {
+		selectClause = "SELECT uid, cluster, data FROM resources "
+	} else {
+		klog.Infoln("selMap length: ", len(selMap), " selMap: ", selMap)
+	}
 	limitClause = " LIMIT "
 
 	whereClause = " WHERE "
@@ -78,62 +89,86 @@ func searchQuery(ctx context.Context, input *model.SearchInput, limit *int) (str
 		query = selectClause + strings.TrimRight(whereClause, trimAND)
 	}
 	klog.Infof("args: %+v", args)
+	klog.Infof("query: %s", query)
 
 	return query, args
 }
 
-func searchResults(query string, args []interface{}) (*model.SearchResult, error) {
+func searchResults(query string, args []interface{}, selMap map[string]bool) (*model.SearchResult, error) {
 
 	pool := db.GetConnection()
 	rows, _ := pool.Query(context.Background(), query, args...)
 	//TODO: Handle error
 	defer rows.Close()
 	var uid, cluster string
+	var totalCount int
 	var data map[string]interface{}
 	items := []map[string]interface{}{}
 	//used for getRelations function:
 	uidArray := make([]string, 0, len(items))
 	// var level int
-
-	for rows.Next() {
-
-		// rowValues, _ := rows.Values()
-		err := rows.Scan(&uid, &cluster, &data)
-		if err != nil {
-			klog.Errorf("Error %s retrieving rows for query:%s", err.Error(), query)
+	if selMap[COUNT] {
+		var count int
+		for rows.Next() {
+			err := rows.Scan(&count)
+			if err != nil {
+				klog.Errorf("Error %s retrieving rows for count query:%s", err.Error(), query)
+			}
+			totalCount = count
+			klog.Info("Count: ", totalCount)
 		}
+	}
+	if selMap[ITEMS] || selMap[RELATED] {
+		for rows.Next() {
+			// var rowValues []interface{}
+			// rowValues, _ = rows.Values()
+			// klog.Info(rowValues[0])
 
-		// TODO: To be removed when indexer handles this. Currently only string type is handled.
-		currItem := make(map[string]interface{})
-		for k, myInterface := range data {
-			switch v := myInterface.(type) {
-			case string:
-				currItem[k] = strings.ToLower(v)
-			default:
-				// klog.Info("Not string type.", k, v)
-				continue
+			err := rows.Scan(&uid, &cluster, &data)
+			if err != nil {
+				klog.Errorf("Error %s retrieving rows for query:%s", err.Error(), query)
 			}
 
+			// TODO: To be removed when indexer handles this. Currently only string type is handled.
+			currItem := make(map[string]interface{})
+			for k, myInterface := range data {
+				switch v := myInterface.(type) {
+				case string:
+					currItem[k] = strings.ToLower(v)
+				default:
+					// klog.Info("Not string type.", k, v)
+					continue
+				}
+
+			}
+			currUid := uid
+			currItem["_uid"] = currUid
+			currCluster := cluster
+			currItem["cluster"] = currCluster
+			items = append(items, currItem)
+
+			uidArray = append(uidArray, currUid)
 		}
-		currUid := uid
-		currItem["_uid"] = currUid
-		currCluster := cluster
-		currItem["cluster"] = currCluster
-		items = append(items, currItem)
-
-		uidArray = append(uidArray, currUid)
-
-	}
-	klog.Info("len search result items: ", len(items))
-	totalCount := len(items)
-
-	srchrelatedresult := getRelations(uidArray)
-	for i, result := range srchrelatedresult {
-		klog.Infof("THIS IS VARIABLE: %d %d %s", i, result.Count, result.Kind)
-
+		klog.Info("len search result items: ", len(items))
+		totalCount = len(items)
 	}
 
-	klog.Infof("%+v\n", srchrelatedresult)
+	var srchrelatedresult []*model.SearchRelatedResult
+	if selMap[RELATED] {
+		klog.Infoln("Going to fetch related items")
+		relatedTime := time.Now()
+		srchrelatedresult = getRelations(uidArray)
+		klog.Infoln("Time since relatedTime1: ", time.Since(relatedTime))
+		for i, result := range srchrelatedresult {
+			c := result.Count
+			klog.Infof("THIS IS VARIABLE num %d: %d %s", i, *c, result.Kind)
+
+		}
+		klog.Infoln("Time since relatedTime2: ", time.Since(relatedTime))
+
+		// klog.Infof("%+v\n", srchrelatedresult)
+
+	}
 	srchresult1 := model.SearchResult{
 		Count:   &totalCount,
 		Items:   items,
@@ -168,8 +203,8 @@ func getRelations(uidArray []string) []*model.SearchRelatedResult {
 	SELECT r.uid, r.data, e.sourcekind, e.destkind, e.sourceid, e.destid, ARRAY[r.uid] as path, 1 as level
 		from resources r
 		INNER JOIN
-			edges e ON (r.uid = e.sourceid)
-		 where r.uid = ANY($1) or e.destid = ANY($2)
+			edges e ON (r.uid = e.sourceid) OR ON (r.uid = e.destid)
+		 where r.uid = ANY($1)
 	union
 	select r.uid, r.data, e.sourcekind, e.destkind, e.sourceid, e.destid, path||r.uid, level+1 as level
 		from resources r
