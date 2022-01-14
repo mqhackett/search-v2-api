@@ -168,7 +168,7 @@ func getRelations(uidArray []string) []*model.SearchRelatedResult {
 	SELECT r.uid, r.data, e.sourcekind, e.destkind, e.sourceid, e.destid, ARRAY[r.uid] as path, 1 as level
 		from resources r
 		INNER JOIN
-			edges e ON (r.uid = e.sourceid)
+			edges e ON (r.uid = e.sourceid or r.uid = e.destid)
 		 where r.uid = ANY($1) or e.destid = ANY($2)
 	union
 	select r.uid, r.data, e.sourcekind, e.destkind, e.sourceid, e.destid, path||r.uid, level+1 as level

@@ -40,14 +40,34 @@ input SearchInput {
 type SearchResult {
     count: Int
     items: [Map]
-    related: [SearchRelatedResult]
+    related: SearchResultRelatedItems
   }
+
+type SearchResultItems {
+  items: [Map]
+  }
+
+
+type SearchResultCount {
+  count: Int
+  }
+
 
 type SearchRelatedResult {
     kind: String!
     count: Int
     items: [Map]
   }
+
+
+type SearchResultRelatedItems {
+  items: [Map]
+  }
+
+
+type SeachRelatedCount {
+  count: Int
+}
 
 
 type userSearch {

@@ -8,6 +8,10 @@ type Message struct {
 	Description *string `json:"description"`
 }
 
+type SeachRelatedCount struct {
+	Count *int `json:"count"`
+}
+
 type SearchFilter struct {
 	Property string    `json:"property"`
 	Values   []*string `json:"values"`
@@ -26,10 +30,12 @@ type SearchRelatedResult struct {
 	Items []map[string]interface{} `json:"items"`
 }
 
-type SearchResult struct {
-	Count   *int                     `json:"count"`
-	Items   []map[string]interface{} `json:"items"`
-	Related []*SearchRelatedResult   `json:"related"`
+type SearchResultCount struct {
+	Count *int `json:"count"`
+}
+
+type SearchResultItems struct {
+	Items []map[string]interface{} `json:"items"`
 }
 
 type UserSearch struct {
